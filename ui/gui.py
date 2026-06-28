@@ -159,6 +159,71 @@ class ReportsWindow(ctk.CTkToplevel):
         
         conn.close()
 
+class ReservationDialog(ctk.CTkToplevel):
+    def __init__(self, parent, space_card):
+        super().__init__(parent)
+        self.space_card = space_card
+        self.title(f"📅 ჯავშანი - {space_card.name}")
+        self.geometry("350x300")
+        self.attributes("-topmost", True)
+        self.resizable(False, False)
+
+        ctk.CTkLabel(self, text="სტუმრის სახელი:", font=ctk.CTkFont(weight="bold")).pack(pady=(20, 5))
+        self.name_entry = ctk.CTkEntry(self, width=200)
+        self.name_entry.pack(pady=5)
+
+        ctk.CTkLabel(self, text="დრო (საათი : წუთი):", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 5))
+        
+        time_frame = ctk.CTkFrame(self, fg_color="transparent")
+        time_frame.pack()
+        
+        # საათები (00-დან 23-მდე)
+        self.hour_combo = ctk.CTkComboBox(time_frame, values=[f"{i:02d}" for i in range(24)], width=70)
+        self.hour_combo.pack(side="left", padx=5)
+        self.hour_combo.set(datetime.now().strftime("%H"))
+        
+        ctk.CTkLabel(time_frame, text=":").pack(side="left")
+        
+        # წუთები (5-წუთიანი ბიჯით)
+        self.min_combo = ctk.CTkComboBox(time_frame, values=[f"{i:02d}" for i in range(0, 60, 5)], width=70)
+        self.min_combo.pack(side="left", padx=5)
+        
+        current_min = int(datetime.now().strftime("%M"))
+        nearest_min = (current_min // 5 + 1) * 5
+        if nearest_min >= 60: nearest_min = 0
+        self.min_combo.set(f"{nearest_min:02d}")
+
+        self.error_label = ctk.CTkLabel(self, text="", text_color="red")
+        self.error_label.pack(pady=5)
+
+        ctk.CTkButton(self, text="💾 შენახვა", fg_color="#2980b9", command=self.save_reservation).pack(pady=15)
+
+    def save_reservation(self):
+        name = self.name_entry.get()
+        if not name:
+            self.error_label.configure(text="გთხოვთ შეიყვანოთ სახელი!")
+            return
+        
+        now = datetime.now()
+        res_hour = int(self.hour_combo.get())
+        res_min = int(self.min_combo.get())
+        
+        # ვაყენებთ დროს
+        res_time = now.replace(hour=res_hour, minute=res_min, second=0, microsecond=0)
+        
+        # თუ არჩეული დრო უკვე გავიდა დღეს, ე.ი. ხვალინდელი დღის ჯავშანია
+        if res_time < now:
+            res_time += timedelta(days=1)
+            
+        conn = sqlite3.connect('nante_club.db')
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO Reservations (space_id, customer_name, reserved_time) VALUES (?, ?, ?)",
+                       (self.space_card.space_id, name, res_time.strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+        conn.close()
+        
+        self.space_card.check_reservation()
+        self.destroy()
 
 class CartWindow(ctk.CTkToplevel):
     def __init__(self, parent, space_name, session_id):
@@ -481,6 +546,9 @@ class SpaceCard(ctk.CTkFrame):
         self.start_time, self.timer_id, self.session_id = None, None, None
         self.cashier_name = cashier_name
         
+        self.has_reservation = False
+        self.res_id, self.res_name, self.res_time = None, "", None
+        
         if session_start_time:
             self.start_time = datetime.strptime(session_start_time, '%Y-%m-%d %H:%M:%S.%f') if '.' in session_start_time else datetime.strptime(session_start_time, '%Y-%m-%d %H:%M:%S')
             self.fetch_active_session_id()
@@ -495,13 +563,58 @@ class SpaceCard(ctk.CTkFrame):
         self.cost_label = ctk.CTkLabel(self, text="0.00 ₾", font=ctk.CTkFont(size=20, weight="bold"), text_color="#f39c12")
         self.cost_label.pack(pady=(0, 10))
         
+        # ჯავშნის ტექსტი (თავიდან ცარიელია)
+        self.reservation_label = ctk.CTkLabel(self, text="", text_color="#f39c12", font=ctk.CTkFont(size=12))
+        self.reservation_label.pack(pady=(0, 5))
+        
+        self.reserve_btn = ctk.CTkButton(self, text="📅 დაჯავშნა", fg_color="#8e44ad", hover_color="#9b59b6", command=self.toggle_reservation)
+        self.reserve_btn.pack(pady=(5, 5), padx=20, fill="x")
+
         self.bar_btn = ctk.CTkButton(self, text="🛒 ბარი", fg_color="#2980b9", hover_color="#3498db", command=self.open_cart)
         self.action_btn = ctk.CTkButton(self, text="▶ Start", fg_color="#27ae60", hover_color="#2ecc71", command=self.toggle_session)
         self.action_btn.pack(pady=(5, 15), padx=20, fill="x")
 
         if self.is_active:
             self.set_active_ui()
-            self.update_timer()
+            
+        self.check_reservation()
+        # ტაიმერი ახლა სულ მუშაობს (ჯავშნის წამზომის გამო), 
+        # მაგრამ ფულს ვითვლის მხოლოდ is_active=True-ს დროს
+        self.update_timer()
+
+    def check_reservation(self):
+        conn = sqlite3.connect('nante_club.db')
+        cursor = conn.cursor()
+        # ვეძებთ ამ მაგიდაზე უახლოეს ჯავშანს მომავალში
+        cursor.execute('''SELECT id, customer_name, reserved_time FROM Reservations 
+                          WHERE space_id=? AND reserved_time >= ? 
+                          ORDER BY reserved_time ASC LIMIT 1''', 
+                       (self.space_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        res = cursor.fetchone()
+        conn.close()
+        
+        if res:
+            self.res_id, self.res_name, res_time_str = res
+            self.res_time = datetime.strptime(res_time_str, '%Y-%m-%d %H:%M:%S')
+            self.has_reservation = True
+            self.reserve_btn.configure(text="✖ ჯავშნის გაუქმება", fg_color="#c0392b", hover_color="#e74c3c")
+        else:
+            self.has_reservation = False
+            self.reservation_label.configure(text="")
+            self.reserve_btn.configure(text="📅 დაჯავშნა", fg_color="#8e44ad", hover_color="#9b59b6")
+
+    def toggle_reservation(self):
+        if self.has_reservation:
+            # თუ უკვე დაჯავშნილია, ვაუქმებთ
+            conn = sqlite3.connect('nante_club.db')
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM Reservations WHERE id=?", (self.res_id,))
+            conn.commit()
+            conn.close()
+            self.check_reservation()
+        else:
+            # ვხსნით ჯავშნის ფანჯარას
+            ReservationDialog(self, self)
 
     def fetch_active_session_id(self):
         conn = sqlite3.connect('nante_club.db')
@@ -524,20 +637,25 @@ class SpaceCard(ctk.CTkFrame):
         cursor.execute("UPDATE Spaces SET is_active=1 WHERE id=?", (self.space_id,))
         cursor.execute("INSERT INTO Sessions (space_id, start_time, status) VALUES (?, ?, 'Active')", (self.space_id, self.start_time.strftime('%Y-%m-%d %H:%M:%S')))
         self.session_id = cursor.lastrowid
+        
+        # თუ ამ მაგიდაზე ჯავშანი იყო და დავაჭირეთ Start-ს, ე.ი. კლიენტი მოვიდა, ჯავშანს ვშლით
+        if self.has_reservation:
+            cursor.execute("DELETE FROM Reservations WHERE id=?", (self.res_id,))
+            
         conn.commit()
         conn.close()
 
+        if self.has_reservation:
+            self.check_reservation()
+
         self.set_active_ui()
-        self.update_timer()
 
     def stop_session(self):
-        if self.timer_id:
-            self.after_cancel(self.timer_id)
-            self.timer_id = None
+        # CheckoutWindow თავისით გააჩერებს გადახდას
         CheckoutWindow(self, self)
 
     def resume_timer(self):
-        self.update_timer()
+        pass # ტაიმერს აღარ ვაჩერებთ, რადგან ჯავშნისთვის სულ მუშაობს ფონზე
 
     def finalize_stop(self):
         self.is_active = False
@@ -559,18 +677,29 @@ class SpaceCard(ctk.CTkFrame):
         self.bar_btn.pack_forget()
 
     def update_timer(self):
-        if self.is_active:
+        # 1. ვაახლებთ ჯავშნის ტაიმერს (თუ არსებობს)
+        if self.has_reservation:
+            diff = self.res_time - datetime.now()
+            if diff.total_seconds() > 0:
+                h, r = divmod(int(diff.total_seconds()), 3600)
+                m, s = divmod(r, 60)
+                self.reservation_label.configure(text=f"⏳ ჯავშანი: {self.res_name} ({h:02d}:{m:02d}:{s:02d})", text_color="#f39c12")
+            else:
+                self.reservation_label.configure(text=f"⏳ ჯავშანი: {self.res_name} (დრო მოვიდა!)", text_color="#e74c3c")
+
+        # 2. ვაახლებთ მიმდინარე თამაშის ტაიმერს და ფულს
+        if self.is_active and self.start_time:
             elapsed = datetime.now() - self.start_time
             total_seconds = int(elapsed.total_seconds())
             hours, remainder = divmod(total_seconds, 3600)
             minutes, seconds = divmod(remainder, 60)
             self.time_label.configure(text=f"{hours:02d}:{minutes:02d}:{seconds:02d}")
             self.cost_label.configure(text=f"{(elapsed.total_seconds() / 3600) * self.rate:.2f} ₾")
-            self.timer_id = self.after(1000, self.update_timer)
+            
+        self.timer_id = self.after(1000, self.update_timer)
             
     def open_cart(self):
         if self.session_id: CartWindow(self, self.name, self.session_id)
-
 
 class DashboardApp(ctk.CTk):
     def __init__(self, username, role):

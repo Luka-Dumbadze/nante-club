@@ -42,6 +42,15 @@ def initialize_db():
         FOREIGN KEY(session_id) REFERENCES Sessions(id), FOREIGN KEY(product_id) REFERENCES Products(id)
     )''')
 
+    # --- 🆕 აქ დაემატა ჯავშნების ცხრილი ---
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Reservations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        space_id INTEGER,
+        customer_name TEXT,
+        reserved_time DATETIME NOT NULL,
+        FOREIGN KEY(space_id) REFERENCES Spaces(id)
+    )''')
+
     cursor.execute("SELECT COUNT(*) FROM Users")
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO Users (username, password, role) VALUES ('admin', 'admin123', 'Admin')")
