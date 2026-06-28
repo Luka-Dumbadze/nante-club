@@ -293,13 +293,70 @@ class InventoryWindow(ctk.CTkToplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("📦 მარაგების მართვა")
-        self.geometry("600x500")
+        self.geometry("600x550")
         self.attributes("-topmost", True)
         self.grid_columnconfigure(0, weight=1)
+
+        add_frame = ctk.CTkFrame(self, fg_color="#2c3e50", corner_radius=10)
+        add_frame.pack(fill="x", padx=20, pady=(20, 10))
+
+        ctk.CTkLabel(add_frame, text="ახალი პროდუქტი", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=15, pady=(10, 5))
+
+        fields_frame = ctk.CTkFrame(add_frame, fg_color="transparent")
+        fields_frame.pack(fill="x", padx=15, pady=(0, 10))
+
+        ctk.CTkLabel(fields_frame, text="სახელი:").grid(row=0, column=0, padx=(0, 5), pady=5, sticky="w")
+        self.name_entry = ctk.CTkEntry(fields_frame, width=150, placeholder_text="Name")
+        self.name_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        ctk.CTkLabel(fields_frame, text="ფასი:").grid(row=0, column=2, padx=(15, 5), pady=5, sticky="w")
+        self.price_entry = ctk.CTkEntry(fields_frame, width=80, placeholder_text="0.00")
+        self.price_entry.grid(row=0, column=3, padx=5, pady=5)
+
+        ctk.CTkLabel(fields_frame, text="რაოდენობა:").grid(row=0, column=4, padx=(15, 5), pady=5, sticky="w")
+        self.qty_entry = ctk.CTkEntry(fields_frame, width=80, placeholder_text="0")
+        self.qty_entry.grid(row=0, column=5, padx=5, pady=5)
+
+        self.add_error_label = ctk.CTkLabel(add_frame, text="", text_color="red")
+        self.add_error_label.pack(anchor="w", padx=15)
+
+        ctk.CTkButton(add_frame, text="+ Add Product", fg_color="#27ae60", hover_color="#2ecc71",
+                      command=self.add_product).pack(anchor="e", padx=15, pady=(0, 10))
         
         self.scroll_frame = ctk.CTkScrollableFrame(self)
-        self.scroll_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        self.scroll_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
         
+        self.refresh_list()
+
+    def add_product(self):
+        name = self.name_entry.get().strip()
+        price_str = self.price_entry.get().strip()
+        qty_str = self.qty_entry.get().strip()
+
+        if not name:
+            self.add_error_label.configure(text="გთხოვთ შეიყვანოთ სახელი!")
+            return
+
+        try:
+            price = float(price_str)
+            quantity = int(qty_str)
+            if price < 0 or quantity < 0:
+                raise ValueError
+        except ValueError:
+            self.add_error_label.configure(text="ფასი და რაოდენობა უნდა იყოს დადებითი რიცხვები!")
+            return
+
+        conn = sqlite3.connect('nante_club.db')
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO Products (name, price, stock_quantity) VALUES (?, ?, ?)",
+                       (name, price, quantity))
+        conn.commit()
+        conn.close()
+
+        self.name_entry.delete(0, "end")
+        self.price_entry.delete(0, "end")
+        self.qty_entry.delete(0, "end")
+        self.add_error_label.configure(text="")
         self.refresh_list()
 
     def refresh_list(self):
@@ -324,6 +381,160 @@ class InventoryWindow(ctk.CTkToplevel):
         cursor.execute("UPDATE Products SET stock_quantity = stock_quantity + ? WHERE id = ?", (amount, product_id))
         conn.commit()
         conn.close()
+        self.refresh_list()
+
+
+class SettingsWindow(ctk.CTkToplevel):
+    def __init__(self, parent, dashboard):
+        super().__init__(parent)
+        self.dashboard = dashboard
+        self.title("⚙️ პარამეტრები - სივრცის ტარიფები")
+        self.geometry("500x550")
+        self.attributes("-topmost", True)
+
+        ctk.CTkLabel(self, text="სივრცის საათობრივი ტარიფები",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 10))
+
+        self.scroll_frame = ctk.CTkScrollableFrame(self)
+        self.scroll_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+        self.rate_entries = {}
+        self.load_spaces()
+
+        self.status_label = ctk.CTkLabel(self, text="", text_color="#2ecc71")
+        self.status_label.pack(pady=5)
+
+        ctk.CTkButton(self, text="💾 შენახვა", fg_color="#2980b9", hover_color="#3498db",
+                      command=self.save_rates).pack(pady=(5, 20), padx=20, fill="x")
+
+    def load_spaces(self):
+        for widget in self.scroll_frame.winfo_children():
+            widget.destroy()
+        self.rate_entries.clear()
+
+        conn = sqlite3.connect('nante_club.db')
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, name, rate_per_hour FROM Spaces ORDER BY id")
+
+        for space_id, name, rate in cursor.fetchall():
+            row = ctk.CTkFrame(self.scroll_frame, fg_color="#2c3e50", corner_radius=8)
+            row.pack(fill="x", pady=5, padx=5)
+            ctk.CTkLabel(row, text=name, font=ctk.CTkFont(weight="bold"), width=200,
+                          anchor="w").pack(side="left", padx=10, pady=10)
+            ctk.CTkLabel(row, text="₾/სთ:").pack(side="left", padx=(0, 5))
+            entry = ctk.CTkEntry(row, width=80)
+            entry.insert(0, f"{rate:g}")
+            entry.pack(side="right", padx=10, pady=10)
+            self.rate_entries[space_id] = entry
+
+        conn.close()
+
+    def save_rates(self):
+        try:
+            conn = sqlite3.connect('nante_club.db')
+            cursor = conn.cursor()
+
+            for space_id, entry in self.rate_entries.items():
+                rate = float(entry.get())
+                if rate < 0:
+                    raise ValueError
+                cursor.execute("UPDATE Spaces SET rate_per_hour = ? WHERE id = ?", (rate, space_id))
+
+            conn.commit()
+            conn.close()
+
+            for space_id, entry in self.rate_entries.items():
+                card = self.dashboard.space_cards.get(space_id)
+                if card:
+                    card.update_rate(float(entry.get()))
+
+            self.status_label.configure(text="✅ ტარიფები წარმატებით შეინახა!", text_color="#2ecc71")
+        except ValueError:
+            self.status_label.configure(text="გთხოვთ შეიყვანოთ სწორი ტარიფები!", text_color="red")
+
+
+class HistoryWindow(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("📜 ტრანზაქციების ისტორია")
+        self.geometry("750x500")
+        self.attributes("-topmost", True)
+
+        header = ctk.CTkFrame(self, fg_color="#2c3e50", corner_radius=10)
+        header.pack(fill="x", padx=20, pady=(20, 10))
+        ctk.CTkLabel(header, text="დღევანდელი ტრანზაქციები",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=10)
+
+        col_header = ctk.CTkFrame(self, fg_color="transparent")
+        col_header.pack(fill="x", padx=25, pady=(0, 5))
+        for text, width in [("სივრცე", 150), ("დრო", 160), ("თანხა", 100), ("ტერმინალი", 100)]:
+            ctk.CTkLabel(col_header, text=text, font=ctk.CTkFont(weight="bold"), width=width,
+                          anchor="w").pack(side="left", padx=5)
+
+        self.scroll_frame = ctk.CTkScrollableFrame(self)
+        self.scroll_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+        self.refresh_list()
+
+    def refresh_list(self):
+        for widget in self.scroll_frame.winfo_children():
+            widget.destroy()
+
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).strftime('%Y-%m-%d %H:%M:%S')
+
+        conn = sqlite3.connect('nante_club.db')
+        cursor = conn.cursor()
+        cursor.execute('''SELECT t.id, sp.name, t.transaction_date, t.total_paid, t.terminal_type, t.session_id
+                          FROM Transactions t
+                          JOIN Sessions s ON t.session_id = s.id
+                          JOIN Spaces sp ON s.space_id = sp.id
+                          WHERE t.transaction_date >= ?
+                          ORDER BY t.transaction_date DESC''', (today_start,))
+
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            ctk.CTkLabel(self.scroll_frame, text="დღეს ტრანზაქციები არ არის",
+                         text_color="#7f8c8d").pack(pady=20)
+            return
+
+        for txn_id, space_name, txn_date, total_paid, terminal_type, session_id in rows:
+            row = ctk.CTkFrame(self.scroll_frame, fg_color="#2c3e50", corner_radius=8)
+            row.pack(fill="x", pady=4, padx=5)
+
+            time_str = txn_date
+            if isinstance(txn_date, str) and len(txn_date) >= 16:
+                time_str = txn_date[11:16]
+
+            ctk.CTkLabel(row, text=space_name, width=150, anchor="w").pack(side="left", padx=10, pady=8)
+            ctk.CTkLabel(row, text=time_str, width=160, anchor="w").pack(side="left", padx=5)
+            ctk.CTkLabel(row, text=f"{total_paid:.2f} ₾", width=100, anchor="w",
+                          text_color="#f1c40f").pack(side="left", padx=5)
+            ctk.CTkLabel(row, text=terminal_type or "—", width=100, anchor="w").pack(side="left", padx=5)
+
+            ctk.CTkButton(row, text="Refund (გაუქმება)", width=140, fg_color="#c0392b", hover_color="#e74c3c",
+                          command=lambda tid=txn_id, sid=session_id: self.refund_transaction(tid, sid)
+                          ).pack(side="right", padx=10, pady=5)
+
+    def refund_transaction(self, transaction_id, session_id):
+        conn = sqlite3.connect('nante_club.db')
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("SELECT product_id, quantity FROM SessionOrders WHERE session_id = ?", (session_id,))
+            for product_id, quantity in cursor.fetchall():
+                cursor.execute("UPDATE Products SET stock_quantity = stock_quantity + ? WHERE id = ?",
+                               (quantity, product_id))
+
+            cursor.execute("DELETE FROM Transactions WHERE id = ?", (transaction_id,))
+            cursor.execute("UPDATE Sessions SET status = 'Refunded' WHERE id = ?", (session_id,))
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+        finally:
+            conn.close()
+
         self.refresh_list()
 
 
@@ -555,7 +766,8 @@ class SpaceCard(ctk.CTkFrame):
 
         self.name_label = ctk.CTkLabel(self, text=self.name, font=ctk.CTkFont(size=18, weight="bold"))
         self.name_label.pack(pady=(15, 5))
-        self.rate_label = ctk.CTkLabel(self, text=f"{self.rate:g} ₾ / 1 სთ", text_color="#7f8c8d").pack()
+        self.rate_label = ctk.CTkLabel(self, text=f"{self.rate:g} ₾ / 1 სთ", text_color="#7f8c8d")
+        self.rate_label.pack()
         self.status_label = ctk.CTkLabel(self, text="🟢 თავისუფალი", font=ctk.CTkFont(size=14))
         self.status_label.pack(pady=5)
         self.time_label = ctk.CTkLabel(self, text="00:00:00", font=ctk.CTkFont(size=24, weight="bold"))
@@ -701,6 +913,10 @@ class SpaceCard(ctk.CTkFrame):
     def open_cart(self):
         if self.session_id: CartWindow(self, self.name, self.session_id)
 
+    def update_rate(self, new_rate):
+        self.rate = new_rate
+        self.rate_label.configure(text=f"{self.rate:g} ₾ / 1 სთ")
+
 class DashboardApp(ctk.CTk):
     def __init__(self, username, role):
         super().__init__()
@@ -708,7 +924,9 @@ class DashboardApp(ctk.CTk):
         self.geometry("1200x800")
         
         self.username = username
+        self.role = role
         self.login_time = datetime.now()
+        self.space_cards = {}
         
         self.top_frame = ctk.CTkFrame(self, height=60)
         self.top_frame.pack(fill="x", padx=10, pady=10)
@@ -716,12 +934,17 @@ class DashboardApp(ctk.CTk):
         ctk.CTkLabel(self.top_frame, text=f"👤 ოპერატორი: {username} | ცვლა დაიწყო: {self.login_time.strftime('%H:%M')}", 
                      font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", padx=20, pady=15)
         
-        if role == 'Admin':
-            ctk.CTkButton(self.top_frame, text="📊 სტატისტიკა", fg_color="#27ae60", command=self.open_reports).pack(side="right", padx=10, pady=15)
-            ctk.CTkButton(self.top_frame, text="📦 მარაგები", fg_color="#34495e", command=lambda: InventoryWindow(self)).pack(side="right", padx=10, pady=15)
-            
         ctk.CTkButton(self.top_frame, text="🚪 გასვლა", fg_color="#c0392b", hover_color="#e74c3c", width=100, 
                       command=self.logout).pack(side="right", padx=10, pady=15)
+
+        ctk.CTkButton(self.top_frame, text="📜 ისტორია", fg_color="#8e44ad", hover_color="#9b59b6",
+                      command=self.open_history).pack(side="right", padx=10, pady=15)
+
+        if role == 'Admin':
+            ctk.CTkButton(self.top_frame, text="⚙️ პარამეტრები", fg_color="#2980b9", hover_color="#3498db",
+                          command=self.open_settings).pack(side="right", padx=10, pady=15)
+            ctk.CTkButton(self.top_frame, text="📊 სტატისტიკა", fg_color="#27ae60", command=self.open_reports).pack(side="right", padx=10, pady=15)
+            ctk.CTkButton(self.top_frame, text="📦 მარაგები", fg_color="#34495e", command=lambda: InventoryWindow(self)).pack(side="right", padx=10, pady=15)
 
         self.spaces_frame = ctk.CTkScrollableFrame(self)
         self.spaces_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -744,6 +967,7 @@ class DashboardApp(ctk.CTk):
 
             card = SpaceCard(self.spaces_frame, space_id, name, rate, is_active, session_start_time, cashier_name=self.username)
             card.grid(row=row_count, column=col_index, padx=15, pady=15, sticky="nsew")
+            self.space_cards[space_id] = card
             self.spaces_frame.grid_columnconfigure(col_index, weight=1)
             
             col_index += 1
@@ -755,6 +979,12 @@ class DashboardApp(ctk.CTk):
 
     def open_reports(self): 
         ReportsWindow(self)
+
+    def open_settings(self):
+        SettingsWindow(self, self)
+
+    def open_history(self):
+        HistoryWindow(self)
         
     def logout(self):
         ShiftCloseDialog(self, self)
