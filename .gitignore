@@ -2,4 +2,6 @@ venv/
 __pycache__/
 *.pyc
 nante_club.db
-.DS_Store
+.DS_Storebuild/
+dist/
+*.spec
